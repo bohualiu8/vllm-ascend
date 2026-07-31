@@ -1332,6 +1332,7 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
         num_decodes_typed = num_decodes or 0
         num_decode_tokens_typed = num_decode_tokens or 0
         query_start_loc = common_attn_metadata.query_start_loc[: num_decodes_typed + 1]
+        query_seq_lens = query_start_loc[1:] - query_start_loc[:-1]
         seq_lens = common_attn_metadata.seq_lens
         query_start_loc_cpu = common_attn_metadata.query_start_loc_cpu[: num_decodes_typed + 1]
         max_seqlen_q = torch.max(query_start_loc_cpu[1:] - query_start_loc_cpu[:-1]).item()
@@ -1368,7 +1369,7 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
             ori_win_left, ori_win_right = get_dspark_sparse_sas_window(self.vllm_config)
 
         metadata_op = DeviceOperator.get_dsa_sparse_attn_metadata_op()
-        metadata_kwargs = DeviceOperator.get_dsa_sparse_attn_metadata_kwargs(self.seqused_q.device)
+        metadata_kwargs = DeviceOperator.get_dsa_sparse_attn_metadata_kwargs(query_seq_lens.device)
 
         decode_sas_metadata = metadata_op(
             **metadata_kwargs,
@@ -1378,16 +1379,16 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
             cu_seqlens_q=query_start_loc,
             cu_seqlens_ori_kv=self.cu_seqlens_ori_kv,
             cu_seqlens_cmp_kv=self.cu_seqlens_cmp_kv,
-            seqused_q=self.seqused_q,
-            seqused_kv=seq_lens[:num_decodes],
+            seqused_q=query_seq_lens,
+            seqused_kv=seq_lens[:num_decodes_typed],
             max_seqlen_q=max_seqlen_q,
             max_seqlen_kv=max_seqlen_kv,
-            batch_size=len(seq_lens[:num_decodes]),
+            batch_size=num_decodes_typed,
             cmp_ratio=1,
             ori_mask_mode=4,
             cmp_mask_mode=3,
-            ori_win_left=ori_win_left,
-            ori_win_right=ori_win_right,
+            ori_win_left=self.model_config.hf_config.sliding_window - 1,
+            ori_win_right=0,
             layout_q="TND",
             layout_kv="PA_ND",
             has_ori_kv=True,

@@ -125,7 +125,7 @@ class DeepseekV4DSparkModel(nn.Module):
             config.hidden_size,
             bias=False,
             return_bias=False,
-            quant_config=None,
+            quant_config=vllm_config.quant_config,
             prefix=maybe_prefix(prefix, f"layers.{self.mtp_start_layer_idx}.main_proj"),
         )
         self.main_norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
