@@ -1665,8 +1665,9 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
                 prefill_ratio_to_sas_metadata=dict(),
                 decode_ratio_to_sas_metadata=dict(),
                 common_ratio_to_sas_metadata=dict(),
-                block_size=self.draft_attn_groups[0].kv_cache_spec.block_size,
             )
+        if self.use_compress or self.method == "dspark":
+            extra_attn_metadata_args["block_size"] = self.draft_attn_groups[0].kv_cache_spec.block_size
         if dcp_manager is not None:
             dcp_manager.prepare_spec_decode_drafting_cp_metadata(
                 common_attn_metadata=common_attn_metadata,
