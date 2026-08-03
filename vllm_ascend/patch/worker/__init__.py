@@ -68,8 +68,14 @@ import vllm_ascend.patch.worker.patch_v2.patch_model_state  # noqa
 import vllm_ascend.patch.worker.patch_v2.patch_block_table  # noqa
 import vllm_ascend.patch.worker.patch_v2.patch_attn_utils  # noqa
 
-import vllm_ascend.patch.worker.patch_v2.patch_eagle_speculator  # noqa
-import vllm_ascend.patch.worker.patch_v2.patch_dflash_speculator  # noqa
+# V2 speculator patches depend on private upstream symbols whose locations can
+# change independently of the V1 runner. Do not make V1 worker startup depend
+# on importing the unused V2 speculators.
+import vllm.envs as envs
+
+if envs.VLLM_USE_V2_MODEL_RUNNER:
+    import vllm_ascend.patch.worker.patch_v2.patch_eagle_speculator  # noqa
+    import vllm_ascend.patch.worker.patch_v2.patch_dflash_speculator  # noqa
 
 # only patch routed experts capture in main2main.
 import vllm_ascend.patch.worker.patch_routed_experts_capture  # noqa
