@@ -19,10 +19,10 @@
 
 import torch
 import vllm.model_executor.models.qwen3_next as qwen3_next_module
+from vllm.distributed import tensor_model_parallel_all_gather
 from vllm.distributed.parallel_state import get_pp_group
 from vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn import QwenGatedDeltaNetAttention as _GDNBaseCls
 from vllm.model_executor.models.qwen3_5 import Qwen3_5DecoderLayer
-from vllm.model_executor.models.qwen3_next import _all_gather_hidden_and_residual
 
 try:
     from vllm.model_executor.models.qwen3_5_mtp import Qwen3_5MultiTokenPredictor
@@ -35,6 +35,31 @@ from vllm.model_executor.models.qwen3_next import Qwen3NextAttention
 from vllm_ascend.ascend_forward_context import _EXTRA_CTX
 from vllm_ascend.ops.gdn import AscendGatedDeltaNetAttention
 from vllm_ascend.utils import is_310p
+
+
+_upstream_all_gather_hidden_and_residual = getattr(qwen3_next_module, "_all_gather_hidden_and_residual", None)
+
+
+def _all_gather_hidden_and_residual(
+    hidden_states: torch.Tensor,
+    residual: torch.Tensor | None,
+    full_num_tokens: int,
+    hidden_size: int,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    if _upstream_all_gather_hidden_and_residual is not None:
+        return _upstream_all_gather_hidden_and_residual(
+            hidden_states,
+            residual,
+            full_num_tokens,
+            hidden_size,
+        )
+    if residual is None:
+        hidden_states = tensor_model_parallel_all_gather(hidden_states, 0)
+        return hidden_states[:full_num_tokens], None
+    combined_states = torch.cat([hidden_states, residual], dim=-1)
+    combined_states = tensor_model_parallel_all_gather(combined_states, 0)
+    combined_states = combined_states[:full_num_tokens]
+    return combined_states.split([hidden_size, hidden_size], dim=-1)
 
 
 def _ascend_all_gather_hidden_and_residual(
@@ -57,7 +82,8 @@ def _ascend_all_gather_hidden_and_residual(
     )
 
 
-qwen3_next_module._all_gather_hidden_and_residual = _ascend_all_gather_hidden_and_residual
+if _upstream_all_gather_hidden_and_residual is not None:
+    qwen3_next_module._all_gather_hidden_and_residual = _ascend_all_gather_hidden_and_residual
 
 _GDN_PATCH_TARGET = _GDNBaseCls
 

@@ -42,9 +42,9 @@ class AscendW8A8MXFP8DSDynamicLinearMethod(AscendW8A8MXFP8DynamicLinearMethod):
         vllm_config = get_current_vllm_config()
         tp_size = vllm_config.parallel_config.tensor_parallel_size
         hf_config = vllm_config.model_config.hf_config
-        self.n_groups = hf_config.o_groups
+        self.n_groups = getattr(hf_config, "o_groups", 1)
         self.n_local_groups = self.n_groups // tp_size
-        self.o_lora_rank = hf_config.o_lora_rank
+        self.o_lora_rank = getattr(hf_config, "o_lora_rank", 0)
 
     def get_pergroup_param(
         self, input_size: int, output_size: int, params_dtype: torch.dtype, layer_type: str | None = None
