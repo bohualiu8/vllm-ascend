@@ -24,8 +24,13 @@ namespace optiling {
 
 ge::graphStatus KvQuantSASTilingCheck::CheckFeatureWinKV() const
 {
-    OP_CHECK_IF(oriWinLeft_ != 127, // 127:当前不泛化
-        OP_LOGE(opName_, "oriWinLeft_ only support 127, but got %u", oriWinLeft_),
+    constexpr int64_t SWA_WIN_LEFT = 127;
+    const bool hasOriSparseIndices = opParamInfo_.oriSparseIndices.tensor != nullptr;
+    OP_CHECK_IF(oriWinLeft_ < SWA_WIN_LEFT || (!hasOriSparseIndices && oriWinLeft_ != SWA_WIN_LEFT),
+        OP_LOGE(opName_,
+            "oriWinLeft_ only supports %ld without oriSparseIndices and values no smaller than %ld with "
+            "oriSparseIndices, but got %ld",
+            SWA_WIN_LEFT, SWA_WIN_LEFT, oriWinLeft_),
         return ge::GRAPH_FAILED);
 
     OP_CHECK_IF(oriWinRight_ != 0, // 0:当前不泛化
