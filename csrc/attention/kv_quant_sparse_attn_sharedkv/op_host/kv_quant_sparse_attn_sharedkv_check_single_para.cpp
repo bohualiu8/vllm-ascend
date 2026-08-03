@@ -33,6 +33,7 @@ const std::map<std::string, std::vector<ge::DataType>> DTYPE_SUPPORT_MAP = {
     {ORI_KV_NAME,                    {ge::DT_INT8, ge::DT_FLOAT8_E4M3FN}},
     {CMP_KV_NAME,                    {ge::DT_INT8, ge::DT_FLOAT8_E4M3FN}},
     {ATTEN_OUT_NAME,                 {ge::DT_FLOAT16, ge::DT_BF16}},
+    {ORI_SPARSE_INDICES_NAME,        {ge::DT_INT32}},
     {CMP_SPARSE_INDICES_NAME,        {ge::DT_INT32}},
     {ORI_BLOCK_TABLE_NAME,           {ge::DT_INT32}},
     {CMP_BLOCK_TABLE_NAME,           {ge::DT_INT32}},
@@ -289,6 +290,23 @@ ge::graphStatus KvQuantSASTilingCheck::CheckSingleParaSparseBlockSize() const
     return ge::GRAPH_SUCCESS;
 }
 
+ge::graphStatus KvQuantSASTilingCheck::CheckSingleParaOriSparseIndices() const
+{
+    const std::vector<size_t> sparseIndicesDimNumList = {DIM_NUM_FOUR, DIM_NUM_THREE};
+    if (opParamInfo_.oriSparseIndices.tensor == nullptr) {
+        return ge::GRAPH_SUCCESS;
+    }
+    OP_CHECK_IF(opParamInfo_.oriSparseIndices.tensor->GetShapeSize() == 0,
+        OP_LOGE(opName_, "Any dim of input oriSparseIndices cannot be 0 "),
+        return ge::GRAPH_FAILED);
+    if (ge::GRAPH_SUCCESS != CheckDtypeSupport(opParamInfo_.oriSparseIndices.desc, ORI_SPARSE_INDICES_NAME) ||
+        ge::GRAPH_SUCCESS != CheckDimNumSupport(&opParamInfo_.oriSparseIndices.tensor->GetShape(),
+            sparseIndicesDimNumList, ORI_SPARSE_INDICES_NAME)) {
+        return ge::GRAPH_FAILED;
+    }
+    return ge::GRAPH_SUCCESS;
+}
+
 ge::graphStatus KvQuantSASTilingCheck::CheckSingleParaCmpSparseIndices() const
 {
     const std::vector<size_t> cmpSparseIndicesDimNumList = {DIM_NUM_FOUR, DIM_NUM_THREE};
@@ -408,6 +426,7 @@ ge::graphStatus KvQuantSASTilingCheck::CheckSinglePara() const
 {
     if (ge::GRAPH_SUCCESS != CheckSingleParaQuery() ||
         ge::GRAPH_SUCCESS != CheckSingleParaKey() ||
+        ge::GRAPH_SUCCESS != CheckSingleParaOriSparseIndices() ||
         ge::GRAPH_SUCCESS != CheckSingleParaCmpSparseIndices() ||
         ge::GRAPH_SUCCESS != CheckSingleParaNumHeads() ||
         ge::GRAPH_SUCCESS != CheckSingleParaKvHeadNums() ||

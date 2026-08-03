@@ -29,7 +29,7 @@ using namespace AscendC;
         using VecBlockType = typename std::conditional<g_coreType == AscendC::AIC,                \
             BaseApi::SCFABlockVecDummy<__VA_ARGS__>, BaseApi::SCFABlockVec<__VA_ARGS__>>::type;   \
         templateClass<CubeBlockType, VecBlockType> op;                                            \
-        op.Init(query, oriKV, cmpKV, cmpSparseIndices, oriBlockTable, cmpBlockTable, cuSeqlensQ,  \
+        op.Init(query, oriKV, cmpKV, oriSparseIndices, cmpSparseIndices, oriBlockTable, cmpBlockTable, cuSeqlensQ,  \
                 seqUsedQ, seqUsedKV, sinks, metadata, attentionOut, user, nullptr, &tPipe);    \
         op.Process();                                                                             \
     } while (0)

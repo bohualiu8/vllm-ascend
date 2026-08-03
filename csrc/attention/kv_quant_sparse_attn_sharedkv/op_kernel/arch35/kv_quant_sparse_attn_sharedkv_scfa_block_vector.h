@@ -74,8 +74,8 @@ public:
     __aicore__ inline void InitLocalBuffer(TPipe *pipe, ConstInfo &constInfo);
     // 初始化attentionOutGM
     __aicore__ inline void CleanOutput(__gm__ uint8_t *attentionOut, ConstInfo &constInfo);
-    __aicore__ inline void InitGlobalBuffer(__gm__ uint8_t *oriKV, __gm__ uint8_t *cmpKV, __gm__ uint8_t *cmpSparseIndices,
-        __gm__ uint8_t *oriBlockTable, __gm__ uint8_t *cmpBlockTable, __gm__ uint8_t *sequsedQ, __gm__ uint8_t *sinks);
+    __aicore__ inline void InitGlobalBuffer(__gm__ uint8_t *oriKV, __gm__ uint8_t *cmpKV, __gm__ uint8_t *oriSparseIndices,
+        __gm__ uint8_t *cmpSparseIndices, __gm__ uint8_t *oriBlockTable, __gm__ uint8_t *cmpBlockTable, __gm__ uint8_t *sequsedQ, __gm__ uint8_t *sinks);
     __aicore__ inline void InitOutputSingleCore(ConstInfo &constInfo);
     __aicore__ inline void ProcessVec0(Buffer<BufferType::L1, SyncType::CROSS_CORE_SYNC_FORWARD> &outputL1,
         Buffer<BufferType::GM, SyncType::CROSS_CORE_SYNC_BACKWARD> &v0ResGm,
@@ -131,6 +131,7 @@ private:
     GlobalTensor<KV_T> oriKVGm;
     GlobalTensor<KV_T> cmpKVGm;
     GlobalTensor<KV_T> keyGm;
+    GlobalTensor<int32_t> oriSparseIndicesGm;
     GlobalTensor<int32_t> cmpSparseIndicesGm;
     GlobalTensor<int32_t> oriBlockTableGm;
     GlobalTensor<int32_t> cmpBlockTableGm;
@@ -154,6 +155,7 @@ private:
 
     T negativeFloatScalar;
     bool isSinks = false;
+    bool hasOriSparseIndices = false;
     uint32_t maxBlockNumPerBatch;
     uint32_t blockSize;
     int64_t sparseCalSize;
@@ -532,26 +534,50 @@ __aicore__ inline void SCFABlockVec<TEMPLATE_ARGS>::CopyInKvNotSparse(LocalTenso
     padParams.rightPadding = combineDimAlign - combineDim;
     padParams.paddingValue = 0;
     if constexpr (isPa) {
-        uint64_t blockTableBaseOffset = runInfo.boIdx * maxBlockNumPerBatch;
-        uint64_t dstOffset = 0;
-        uint32_t copyFinishElmenCnt = 0;
-        uint32_t curSequence = s2Idx;
-        int64_t paBlockStride = runInfo.isCmp ? constInfo.cmpKvStride : constInfo.oriKvStride;
-        while (copyFinishElmenCnt < dealRow) {
-            uint64_t blockIdOffset = curSequence / blockSize;
-            uint64_t remainElmenCnt = curSequence % blockSize;
-            uint64_t idInBlockTable = blockTableGm.GetValue(blockTableBaseOffset + blockIdOffset);
-            uint32_t copyElmenCnt = blockSize - remainElmenCnt;
-            if (copyElmenCnt + copyFinishElmenCnt > dealRow) {
-                copyElmenCnt = dealRow - copyFinishElmenCnt;
+        if (hasOriSparseIndices && !runInfo.isCmp) {
+            int64_t queryOffset = runInfo.s1oIdx;
+            if constexpr (LAYOUT_T == SAS_LAYOUT::TND) {
+                queryOffset += cuSeqlensQGm.GetValue(runInfo.boIdx);
+            } else {
+                queryOffset += runInfo.boIdx * constInfo.s1Size;
             }
-            uint64_t srcOffset = idInBlockTable * paBlockStride +
-                remainElmenCnt * constInfo.n2Size * combineBytes + (uint64_t)(runInfo.n2oIdx * combineBytes); // BlockNum, BlockSize, N, D
-            intriParams.blockCount = copyElmenCnt; // base s2 size
-            DataCopyPad(kvMergUb[dstOffset * combineDimAlign], keyGm[srcOffset], intriParams, padParams);
-            dstOffset += copyElmenCnt;
-            copyFinishElmenCnt += copyElmenCnt;
-            curSequence += copyElmenCnt;
+            constexpr int64_t oriSparseIndexWidth = 512;
+            int64_t sparseIndexOffset = queryOffset * constInfo.n2Size * oriSparseIndexWidth +
+                runInfo.n2oIdx * oriSparseIndexWidth + s2Idx;
+            for (int64_t row = 0; row < dealRow; ++row) {
+                int64_t slotId = oriSparseIndicesGm.GetValue(sparseIndexOffset + row);
+                if (slotId < 0) {
+                    continue;
+                }
+                uint64_t physicalBlock = static_cast<uint64_t>(slotId) / blockSize;
+                uint64_t offsetInBlock = static_cast<uint64_t>(slotId) % blockSize;
+                uint64_t srcOffset = physicalBlock * constInfo.oriKvStride +
+                    offsetInBlock * constInfo.n2Size * combineBytes + runInfo.n2oIdx * combineBytes;
+                intriParams.blockCount = 1;
+                DataCopyPad(kvMergUb[row * combineDimAlign], oriKVGm[srcOffset], intriParams, padParams);
+            }
+        } else {
+            uint64_t blockTableBaseOffset = runInfo.boIdx * maxBlockNumPerBatch;
+            uint64_t dstOffset = 0;
+            uint32_t copyFinishElmenCnt = 0;
+            uint32_t curSequence = s2Idx;
+            int64_t paBlockStride = runInfo.isCmp ? constInfo.cmpKvStride : constInfo.oriKvStride;
+            while (copyFinishElmenCnt < dealRow) {
+                uint64_t blockIdOffset = curSequence / blockSize;
+                uint64_t remainElmenCnt = curSequence % blockSize;
+                uint64_t idInBlockTable = blockTableGm.GetValue(blockTableBaseOffset + blockIdOffset);
+                uint32_t copyElmenCnt = blockSize - remainElmenCnt;
+                if (copyElmenCnt + copyFinishElmenCnt > dealRow) {
+                    copyElmenCnt = dealRow - copyFinishElmenCnt;
+                }
+                uint64_t srcOffset = idInBlockTable * paBlockStride +
+                    remainElmenCnt * constInfo.n2Size * combineBytes + (uint64_t)(runInfo.n2oIdx * combineBytes); // BlockNum, BlockSize, N, D
+                intriParams.blockCount = copyElmenCnt; // base s2 size
+                DataCopyPad(kvMergUb[dstOffset * combineDimAlign], keyGm[srcOffset], intriParams, padParams);
+                dstOffset += copyElmenCnt;
+                copyFinishElmenCnt += copyElmenCnt;
+                curSequence += copyElmenCnt;
+            }
         }
     } else {
         DataCopyPad(kvMergUb, keyGm[s2Idx * combineDim], intriParams, padParams);
@@ -883,7 +909,7 @@ __aicore__ inline void SCFABlockVec<TEMPLATE_ARGS>::CleanOutput(__gm__ uint8_t *
 
 TEMPLATES_DEF_NO_DEFAULT
 __aicore__ inline void SCFABlockVec<TEMPLATE_ARGS>::InitGlobalBuffer(__gm__ uint8_t *oriKV, __gm__ uint8_t *cmpKV,
-    __gm__ uint8_t *cmpSparseIndices, __gm__ uint8_t *oriBlockTable, __gm__ uint8_t *cmpBlockTable, __gm__ uint8_t *sequsedQ, __gm__ uint8_t *sinks)
+    __gm__ uint8_t *oriSparseIndices, __gm__ uint8_t *cmpSparseIndices, __gm__ uint8_t *oriBlockTable, __gm__ uint8_t *cmpBlockTable, __gm__ uint8_t *sequsedQ, __gm__ uint8_t *sinks)
 {
     oriKVGm.SetGlobalBuffer((__gm__ KV_T *)(oriKV));
     oriBlockTableGm.SetGlobalBuffer((__gm__ int32_t *)oriBlockTable);
@@ -893,6 +919,10 @@ __aicore__ inline void SCFABlockVec<TEMPLATE_ARGS>::InitGlobalBuffer(__gm__ uint
         cmpBlockTableGm.SetGlobalBuffer((__gm__ int32_t *)cmpBlockTable);
     }
 
+    if (oriSparseIndices != nullptr) {
+        oriSparseIndicesGm.SetGlobalBuffer((__gm__ int32_t *)oriSparseIndices);
+        hasOriSparseIndices = true;
+    }
     if constexpr (TEMPLATE_MODE == SASTemplateMode::SCFA_TEMPLATE_MODE) {
         cmpSparseIndicesGm.SetGlobalBuffer((__gm__ int32_t *)cmpSparseIndices);
     }
@@ -1038,8 +1068,9 @@ class SCFABlockVecDummy {
 public:
     __aicore__ inline SCFABlockVecDummy() {};
     __aicore__ inline void CleanOutput(__gm__ uint8_t *attentionOut, ConstInfo &constInfo) {}
-    __aicore__ inline void InitGlobalBuffer(__gm__ uint8_t *oriKV, __gm__ uint8_t *cmpKV, __gm__ uint8_t *cmpSparseIndices,
-        __gm__ uint8_t *oriBlockTable, __gm__ uint8_t *cmpBlockTable, __gm__ uint8_t *sequsedQ, __gm__ uint8_t *sinks) {}
+    __aicore__ inline void InitGlobalBuffer(__gm__ uint8_t *oriKV, __gm__ uint8_t *cmpKV, __gm__ uint8_t *oriSparseIndices,
+        __gm__ uint8_t *cmpSparseIndices, __gm__ uint8_t *oriBlockTable, __gm__ uint8_t *cmpBlockTable,
+        __gm__ uint8_t *sequsedQ, __gm__ uint8_t *sinks) {}
     __aicore__ inline void InitVecBlock(TPipe *pipe, const KvQuantSparseAttnSharedkvTilingData *__restrict tiling,
         CVSharedParams &sharedParams, int32_t aicIdx, uint8_t subBlockIdx, __gm__ uint8_t *cuSeqlensQ, __gm__ uint8_t *sequsedKv) {};
     __aicore__ inline void InitLocalBuffer(TPipe *pipe, ConstInfo &constInfo) {}

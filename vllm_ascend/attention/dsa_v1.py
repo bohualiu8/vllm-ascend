@@ -370,7 +370,7 @@ def get_dspark_sparse_sas_window(vllm_config: Any) -> tuple[int, int]:
     return window_size + block_size - 1, 0
 
 
-def _aligned_dspark_index_width(window_size: int, block_size: int, alignment: int = 128) -> int:
+def _aligned_dspark_index_width(window_size: int, block_size: int, alignment: int = 512) -> int:
     min_width = int(window_size) + int(block_size)
     return ((min_width + alignment - 1) // alignment) * alignment
 

@@ -447,6 +447,7 @@ private:
     ge::graphStatus CheckSingleParaKvHeadNums() const;
     ge::graphStatus CheckSingleParaSparseMode() const;
     ge::graphStatus CheckSingleParaSparseBlockSize() const;
+    ge::graphStatus CheckSingleParaOriSparseIndices() const;
     ge::graphStatus CheckSingleParaCmpSparseIndices() const;
     ge::graphStatus CheckSingleParaBlockTable() const;
     ge::graphStatus CheckSingleParaCuSeqLensQ() const;
