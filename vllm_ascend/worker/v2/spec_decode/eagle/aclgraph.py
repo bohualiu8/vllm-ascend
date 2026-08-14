@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Ascend project
+import os
 from collections.abc import Callable
 from typing import Any
 
@@ -144,7 +145,7 @@ class EagleAclGraphManager(SpeculatorCudaGraphManager):
             CudaGraphManager.capture(self, create_forward_fn, progress_bar_desc=progress_bar_desc)
 
     def run_fullgraph(self, desc: BatchExecutionDescriptor) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]]:
-        """Override run_fullgraph to update full graph params in run_fullgraph."""
+        """Update runtime attention parameters and replay the Eagle graph."""
         num_tokens = desc.num_tokens
         if self.is_draft_model_prefill:
             logger.info_once("PrefillEagleAclGraphManager: draft prefill run_fullgraph with num_tokens=%s", num_tokens)
@@ -152,36 +153,76 @@ class EagleAclGraphManager(SpeculatorCudaGraphManager):
             logger.info_once("DecodeEagleAclGraphManager: draft run_fullgraph with num_tokens=%s", num_tokens)
 
         draft_attn_metadatas = self.speculator.build_draft_attn_metadatas(desc.num_reqs, self.is_draft_model_prefill)
-        self.update_stream.wait_stream(torch.npu.current_stream())
-        ret = super().run_fullgraph(desc)
+        debug_graph = os.getenv("VLLM_ASCEND_EAGLE3_DEBUG", "0") == "1"
 
-        # refer to vllm.v1.worker.gpu.dp_utils.sync_cudagraph_and_dp_padding to
-        # calculate num_tokens_across_dp.
-        num_tokens_across_dp = torch.full([self.speculator.dp_size], num_tokens)
-        with set_forward_context(
-            self.speculator.model_state.attn_metadata,
-            self.vllm_config,
-            num_tokens=num_tokens,
-            cudagraph_runtime_mode=desc.cg_mode,
-            num_tokens_across_dp=num_tokens_across_dp,
-            batch_descriptor=None,  # Full graph model don't need batch_descriptor
-            slot_mapping=None,
-        ):
-            # decide to update draft graph params
-            _EXTRA_CTX.is_draft_model = True
-
-            # decide to run `prefill` graph or `decodes` graph
-            _EXTRA_CTX.is_draft_model_prefill = self.is_draft_model_prefill
-
-            forward_context = get_forward_context()
-            update_full_graph_params(
-                # FIXME(Ronald1995): support hybrid attn backend
-                list(self.speculator.attn_backends.values())[0],
-                self.update_stream,
-                forward_context,
-                num_tokens,
-                self.vllm_config,
-                self.speculator.speculative_config,
-                draft_attn_metadatas=draft_attn_metadatas,
+        if debug_graph:
+            metadata_summary = []
+            for step, per_step_metadata in enumerate(draft_attn_metadatas or []):
+                if not per_step_metadata:
+                    continue
+                key, metadata = next(iter(per_step_metadata.items()))
+                metadata_summary.append(
+                    {
+                        "step": step,
+                        "key": key,
+                        "seq_lens": list(metadata.seq_lens_list[: min(desc.num_reqs or 0, 4)]),
+                        "actual_q": list(metadata.actual_seq_lengths_q[: min(desc.num_reqs or 0, 4)]),
+                    }
+                )
+            graph_params = self._get_debug_graph_params()
+            captured_param_count = (
+                len(graph_params.attn_params.get(num_tokens, [])) if graph_params is not None else -1
             )
-        return ret
+            # logger.warning(
+            #     "[eagle3/dfx] replay: prefill=%s, num_reqs=%s, "
+            #     "num_tokens=%s, draft_steps=%s, captured_attn_params=%s, metadata=%s",
+            #     self.is_draft_model_prefill,
+            #     desc.num_reqs,
+            #     num_tokens,
+            #     len(draft_attn_metadatas or []),
+            #     captured_param_count,
+            #     metadata_summary,
+            # )
+
+        def update_runtime_graph_params() -> None:
+            num_tokens_across_dp = torch.full(
+                [self.speculator.dp_size],
+                num_tokens,
+                dtype=torch.int32,
+                device="cpu",
+            )
+            with set_forward_context(
+                self.speculator.model_state.attn_metadata,
+                self.vllm_config,
+                num_tokens=num_tokens,
+                cudagraph_runtime_mode=desc.cg_mode,
+                num_tokens_across_dp=num_tokens_across_dp,
+                batch_descriptor=None,
+                slot_mapping=None,
+            ):
+                _EXTRA_CTX.is_draft_model = True
+                _EXTRA_CTX.is_draft_model_prefill = self.is_draft_model_prefill
+                update_full_graph_params(
+                    # FIXME(Ronald1995): support hybrid attn backend
+                    list(self.speculator.attn_backends.values())[0],
+                    self.update_stream,
+                    get_forward_context(),
+                    num_tokens,
+                    self.vllm_config,
+                    self.speculator.speculative_config,
+                    draft_attn_metadatas=draft_attn_metadatas,
+                )
+
+        update_runtime_graph_params()
+        torch.npu.current_stream().wait_stream(self.update_stream)
+        return super().run_fullgraph(desc)
+
+    def _get_debug_graph_params(self):
+        if self.is_draft_model_prefill:
+            from vllm_ascend.compilation.acl_graph import get_draft_graph_prefill_params
+
+            return get_draft_graph_prefill_params()
+
+        from vllm_ascend.compilation.acl_graph import get_draft_graph_params
+
+        return get_draft_graph_params()

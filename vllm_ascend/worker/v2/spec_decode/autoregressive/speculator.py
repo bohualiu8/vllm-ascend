@@ -17,6 +17,7 @@
 # This file is a part of the vllm-ascend project.
 #
 import logging
+import os
 from contextlib import contextmanager
 from copy import copy
 from typing import Any, cast
@@ -108,6 +109,9 @@ class AscendAutoRegressiveSpeculator(AutoRegressiveSpeculator):
         # when in decode phase of eagle speculator, we need some value in
         # draft model's input_batch. so we keep a reference here.
         self.input_batch: InputBatch | None = None
+        self._dfx_iteration = 0
+        self._eagle3_debug_iteration = 0
+        self._num_rejected: torch.Tensor | None = None
 
     def init_cudagraph_manager(self, cudagraph_mode: CUDAGraphMode) -> None:
         super().init_cudagraph_manager(cudagraph_mode)
@@ -152,10 +156,32 @@ class AscendAutoRegressiveSpeculator(AutoRegressiveSpeculator):
         generate_draft.
         """
         self.input_batch = input_batch
+        self._num_rejected = num_rejected.detach().cpu()
+        self._dfx_iteration += 1
+        self._eagle3_debug_iteration = self._dfx_iteration
+        debug_draft = os.getenv("VLLM_ASCEND_EAGLE3_DRAFT_DFX", "0") == "1"
+        debug_limit = int(os.getenv("VLLM_ASCEND_EAGLE3_DRAFT_DFX_LIMIT", "200"))
+        should_log = debug_draft and self._dfx_iteration <= debug_limit and not dummy_run
+        if should_log:
+            num_reqs = input_batch.num_reqs
+            logger.warning(
+                "[eagle3/draft-dfx] before propose: iteration=%s, num_reqs=%s, "
+                "seq_lens=%s, num_sampled=%s, num_rejected=%s, last_sampled=%s, "
+                "temperature=%s, seeds=%s",
+                self._dfx_iteration,
+                num_reqs,
+                input_batch.seq_lens_np[:num_reqs].tolist(),
+                num_sampled[:num_reqs].cpu().tolist(),
+                num_rejected[:num_reqs].cpu().tolist(),
+                last_sampled[:num_reqs].cpu().tolist(),
+                temperature[:num_reqs].cpu().tolist(),
+                seeds[:num_reqs].cpu().tolist(),
+            )
+
         # wrap build_attn_metadata to use Ascend attention metadata building.
         # so we can call super().propose() directly.
         with build_attn_metadata_wrapper(), torch_gather_wrapper():
-            return super().propose(
+            draft_token_ids = super().propose(
                 input_batch,
                 attn_metadata,
                 slot_mappings,
@@ -173,6 +199,18 @@ class AscendAutoRegressiveSpeculator(AutoRegressiveSpeculator):
                 mm_inputs,
                 is_profile=is_profile,
             )
+
+        if should_log:
+            num_reqs = input_batch.num_reqs
+            logger.warning(
+                "[eagle3/draft-dfx] after propose: iteration=%s, seq_lens=%s, "
+                "draft_shape=%s, draft_tokens=%s",
+                self._dfx_iteration,
+                input_batch.seq_lens_np[:num_reqs].tolist(),
+                tuple(draft_token_ids.shape),
+                draft_token_ids[:num_reqs].cpu().tolist(),
+            )
+        return draft_token_ids
 
     def set_attn(
         self,
@@ -486,12 +524,49 @@ class AscendAutoRegressiveSpeculator(AutoRegressiveSpeculator):
             metadata.seq_lens_cpu.copy_(next_seq_lens_cpu)
 
     def _calc_next_seq_lens_cpu(self, seq_lens_cpu, num_reqs, num_reqs_padded, step):
-        # NOTE(drslark) to achieve fully alignment with vllm, `num_rejected` should be subtracted from `seq_lens`
-        # to avoid extra sync overhead, `v2` is currently aligned with NPU `v1` only
-
-        # follows the logic in `prepare_eagle_decode` and `update_eagle_inputs`
-        next_seqs_cpu = torch.clamp(seq_lens_cpu[:num_reqs_padded] + step, max=self.max_model_len)
+        # Rejected speculative tokens are not part of the committed sequence.
+        rejected = self._num_rejected
+        if rejected is None:
+            rejected = torch.zeros(
+                num_reqs_padded,
+                dtype=seq_lens_cpu.dtype,
+                device=seq_lens_cpu.device,
+            )
+        else:
+            rejected = rejected.to(
+                device=seq_lens_cpu.device,
+                dtype=seq_lens_cpu.dtype,
+            )
+            padded_rejected = torch.zeros(
+                num_reqs_padded,
+                dtype=seq_lens_cpu.dtype,
+                device=seq_lens_cpu.device,
+            )
+            copy_size = min(rejected.numel(), num_reqs_padded)
+            padded_rejected[:copy_size].copy_(rejected[:copy_size])
+            rejected = padded_rejected
+        next_seqs_cpu = torch.clamp(
+            seq_lens_cpu[:num_reqs_padded] - rejected + step,
+            min=0,
+            max=self.max_model_len,
+        )
         next_seqs_cpu[num_reqs:].fill_(0)
+        if os.getenv("VLLM_ASCEND_EAGLE3_TRACE", "0") == "1":
+            limit = min(num_reqs, int(os.getenv("VLLM_ASCEND_EAGLE3_TRACE_REQS", "1")))
+            rejected_values = self._num_rejected
+            rejected_values = None if rejected_values is None else rejected_values[:limit].tolist()
+            logger.warning(
+                "[eagle3/trace] seq-lens: iteration=%s, step=%s, base=%s, "
+                "num_rejected=%s, current=%s, upstream_expected_if_rejected_not_committed=%s",
+                self._dfx_iteration,
+                step,
+                seq_lens_cpu[:limit].tolist(),
+                rejected_values,
+                next_seqs_cpu[:limit].tolist(),
+                None
+                if rejected_values is None
+                else next_seqs_cpu[:limit].tolist(),
+            )
         return next_seqs_cpu
 
     def _get_seq_lens_cpu(self) -> torch.Tensor:
