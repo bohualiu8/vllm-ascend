@@ -49,4 +49,5 @@ def assert_spec_decode_acceptance(
             f"{list(minimum_per_pos)} with tolerance {tolerance}"
         )
 
+    print(f"Speculative decoding acceptance_per_pos={acceptance_per_pos} (num_drafts={num_drafts})")
     return acceptance_per_pos
