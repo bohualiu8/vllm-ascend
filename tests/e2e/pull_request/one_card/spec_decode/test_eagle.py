@@ -7,10 +7,9 @@ from transformers import AutoTokenizer
 from vllm import SamplingParams
 from vllm.config import CompilationConfig
 from vllm.tokenizers.registry import resolve_tokenizer_args
-from vllm.v1.metrics.reader import Counter, Vector
-
 from tests.e2e.conftest import VllmRunner
-from tests.e2e.pull_request.one_card.spec_decode.utils import BASELINES, MODELS, calculate_acceptance_per_pos
+from tests.e2e.pull_request.one_card.spec_decode.utils import BASELINES, MODELS
+from tests.e2e.spec_decode_utils import assert_spec_decode_acceptance
 
 MAX_NUM_SEQS = 256
 
@@ -115,7 +114,7 @@ def test_qwen_eagle3_acceptance(
         print(f"Prompt: {prompt!r}, Generated text: {generated_text!r}")
         print(f"Output tokens: {output_tokens}")
 
-    acceptance_per_pos = calculate_acceptance_per_pos(metrics, num_speculative_tokens, Counter, Vector)
+    acceptance_per_pos = assert_spec_decode_acceptance(metrics, num_speculative_tokens)
     effective_num_speculative_tokens = (
         num_speculative_tokens if dynamic_num_speculative_tokens is None else dynamic_num_speculative_tokens
     )

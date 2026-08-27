@@ -20,10 +20,9 @@ from unittest.mock import patch
 
 import pytest
 from vllm import SamplingParams
-from vllm.v1.metrics.reader import Counter, Vector
 
 from tests.e2e.conftest import VllmRunner, wait_until_npu_memory_free
-from tests.e2e.pull_request.one_card.model_runner_v2.utils import calculate_acceptance_per_pos
+from tests.e2e.spec_decode_utils import assert_spec_decode_acceptance
 
 os.environ["HCCL_BUFFSIZE"] = "2048"
 DSPARK_MAIN_MODEL = ["UploadWeight/DeepSeek-V4-Flash-DSpark-w4a8-test"]
@@ -31,7 +30,6 @@ DSPARK_MAIN_MODEL = ["UploadWeight/DeepSeek-V4-Flash-DSpark-w4a8-test"]
 MODEL = "gdydems/DeepSeek-V4-Flash-w4a8-mtp"
 
 
-@pytest.mark.skip("Temporarily skip this DeepSeek V4 test.")
 @pytest.mark.e2e_model(MODEL)
 @pytest.mark.e2e_coverage(
     arch="moe",
@@ -88,15 +86,12 @@ def test_deepseek_v4_mtp_eager():
         runner.model.generate(prompts, sampling_params)
         metrics = runner.model.get_metrics()
 
-    acceptance_per_pos = calculate_acceptance_per_pos(
+    assert_spec_decode_acceptance(
         metrics,
         num_speculative_tokens,
-        Counter,
-        Vector,
+        minimum_per_pos=[0.85, 0.65, 0.35],
+        tolerance=0.03,
     )
-    golden = [0.85, 0.65, 0.35]
-    match = all((a >= b) or (b - a < 0.03) for a, b in zip(acceptance_per_pos, golden))
-    assert match, f"acceptance_per_pos {acceptance_per_pos} below golden {golden}"
 
 
 @pytest.mark.parametrize("model", DSPARK_MAIN_MODEL)
@@ -134,12 +129,9 @@ def test_dspark_spec_decoding(
         runner.model.generate(prompts, sampling_params)
         metrics = runner.model.get_metrics()
 
-    acceptance_per_pos = calculate_acceptance_per_pos(
+    assert_spec_decode_acceptance(
         metrics,
         num_speculative_tokens,
-        Counter,
-        Vector,
+        minimum_per_pos=[0.73, 0.64, 0.55, 0.49, 0.42],
+        tolerance=0.03,
     )
-    golden = [0.73, 0.64, 0.55, 0.49, 0.42]
-    match = all((a >= b) or (b - a < 0.03) for a, b in zip(acceptance_per_pos, golden))
-    assert match, f"acceptance_per_pos {acceptance_per_pos} below golden {golden}"

@@ -26,9 +26,8 @@ from unittest.mock import patch
 
 import pytest
 from vllm.config import CompilationConfig
-from vllm.v1.metrics.reader import Counter, Vector
-
 from tests.e2e.conftest import VllmRunner, cleanup_dist_env_and_memory
+from tests.e2e.spec_decode_utils import assert_spec_decode_acceptance
 
 MAIN_MODEL = "Eco-Tech/GLM-5.2-w4a8"
 SPECULATOR_MODEL = "RedHatAI/GLM-5.2-speculator.dspark"
@@ -67,22 +66,7 @@ def _run_speculative_decoding(
     assert len(outputs) == len(example_prompts)
     assert all(output_ids and output_text for output_ids, output_text in outputs)
 
-    num_drafts = 0
-    num_accepted_tokens_per_pos = [0] * num_speculative_tokens
-    for metric in metrics:
-        if metric.name == "vllm:spec_decode_num_drafts":
-            assert isinstance(metric, Counter)
-            num_drafts += metric.value
-        elif metric.name == "vllm:spec_decode_num_accepted_tokens_per_pos":
-            assert isinstance(metric, Vector)
-            assert len(metric.values) == num_speculative_tokens
-            for pos, value in enumerate(metric.values):
-                num_accepted_tokens_per_pos[pos] += value
-
-    assert num_drafts > 0, "Speculative decoding did not generate any draft tokens"
-    acceptance_per_pos = [accepted / num_drafts for accepted in num_accepted_tokens_per_pos]
-    assert any(acceptance_per_pos), "Speculative decoding did not accept any draft tokens"
-    assert all(0 <= acceptance <= 1 for acceptance in acceptance_per_pos)
+    acceptance_per_pos = assert_spec_decode_acceptance(metrics, num_speculative_tokens)
 
     cleanup_dist_env_and_memory()
     return acceptance_per_pos
